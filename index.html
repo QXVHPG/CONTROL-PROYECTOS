@@ -332,7 +332,6 @@ details summary{cursor:pointer}
 
 <!-- Firebase (versión fijada) -->
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <!-- Configuración del proyecto Firebase (MOD-10) -->
 <script>
@@ -346,12 +345,12 @@ details summary{cursor:pointer}
    Si se dejan como están, el sistema abre en MODO DEMOSTRACIÓN (sin guardar).
    ===================================================================== */
 const FIREBASE_CONFIG = {
-  apiKey: "AIzaSyAaxkJdAf4AK21r47MwU7Za9c9hjJYe1fo",
-  authDomain: "proyectos-e6eb5.firebaseapp.com",
-  projectId: "proyectos-e6eb5",
-  storageBucket: "proyectos-e6eb5.firebasestorage.app",
-  messagingSenderId: "4479729851",
-  appId: "1:4479729851:web:4204d6f1d510ec8a69299e"
+  apiKey: "AIzaSyA5gnsaJ-XOigSYTZQMZ3vPaRL2r7sMLg4",
+  authDomain: "proyectos-47927.firebaseapp.com",
+  projectId: "proyectos-47927",
+  storageBucket: "proyectos-47927.firebasestorage.app",
+  messagingSenderId: "530177935091",
+  appId: "1:530177935091:web:f5507229c185b486125986"
 };
 
 </script>
@@ -365,9 +364,13 @@ const FIREBASE_CONFIG = {
    ===================================================================== */
 const SISTEMA = {
   nombre: 'Sistema de Control de Proyectos',
-  version: '4.0.0',
+  version: '5.0.0',
   fecha: '2026-10-16',
   registro: [
+    { version: '5.0.0', fecha: '2026-10-16', sc: 'SC-2026-019', modulos: 'MOD-10 (2, 4, 5, 6), MOD-12, MOD-01.6; base: MOD-15.4, index',
+      descripcion: 'Sin Firebase Authentication: en Firebase solo se crea la base de datos y se pegan las reglas. Todo sale del index: instalación inicial, PIN, roles y autorizaciones. Los datos viven en un espacio con código aleatorio al que solo se llega con un PIN válido. Cambio estructural: nueva organización de los datos.' },
+    { version: '4.0.1', fecha: '2026-10-16', sc: 'SC-2026-018', modulos: 'MOD-10.1 Configuración de Firebase',
+      descripcion: 'Configuración: la página se conecta al proyecto Firebase «proyectos-47927» (la app web del proyecto anterior fue eliminada y su clave dejó de ser válida). Sin cambios de código.' },
     { version: '4.0.0', fecha: '2026-10-16', sc: 'SC-2026-017', modulos: 'MOD-10.2, MOD-10.5, MOD-10.6, MOD-01.6 (nuevo), MOD-12.1, MOD-12.7 (nuevo), MOD-14.5 (nuevo); base: MOD-08.3, MOD-09.4',
       descripcion: 'Todo desde la página: ya no se crean usuarios ni correos en Firebase. La primera vez, la página pide crear el PIN del administrador (instalación inicial); los demás PIN se crean en Responsables. En Firebase solo se activa el acceso «Anónimo». Se entrega un solo archivo index.html para subir a GitHub. Cambio estructural: cambia la forma de guardar los PIN.' },
     { version: '3.1.1', fecha: '2026-10-16', sc: 'SC-2026-016', modulos: 'MOD-09.4 Importar respaldo; instalación sin comandos',
@@ -618,128 +621,133 @@ function iniciarSistema(){
 <script>
 /* ===== js/mod10-datos.js ===== */
 /* =====================================================================
-   MOD-10 · NÚCLEO DE DATOS (FIREBASE)
+   MOD-10 · NÚCLEO DE DATOS (FIREBASE · solo Firestore)
    Secciones:
-     MOD-10.1 Conexión con Firebase y modo demostración  (config en firebase-config.js)
-     MOD-10.2 Sesión: ingreso SOLO con PIN validado desde la página, e instalación inicial
+     MOD-10.1 Conexión con Firestore y modo demostración (config en firebase-config.js)
+     MOD-10.2 Sesión: ingreso SOLO con PIN, validado desde la página, e instalación inicial
      MOD-10.3 Lectura en tiempo real de las colecciones
-     MOD-10.4 Escritura: guardar, actualizar, eliminar (con o sin autorización)
-     MOD-10.5 Credenciales de administrador para autorizar cambios en otro equipo
+     MOD-10.4 Escritura: guardar, actualizar, eliminar
+     MOD-10.5 Autorización con PIN del administrador
      MOD-10.6 Ingresos: crear, cambiar y retirar PIN
      MOD-10.7 Mensajes de error comprensibles
-   Colecciones Firestore: projects, people, tasks, logs, permits, equipment,
-   changes, audit, config, access (una ficha por PIN: rol, nombre y saludo),
-   sesiones (una por pestaña abierta).
-   v4.0.0 (SC-2026-017): no se crean usuarios ni correos en Firebase; todo se
-   hace desde la página (index). Basta activar el acceso «Anónimo».
-   Toda la información es texto: el sistema no almacena fotos ni documentos.
+   v5.0.0 (SC-2026-019): sin Firebase Authentication. Todo sale del index:
+   - access/{resumen del PIN}: rol, persona, nombre, saludo y el espacio de datos.
+     Se puede leer una ficha si se conoce el PIN, pero no listar las fichas.
+   - espacios/{código aleatorio}/{colección}: todos los datos del sistema.
+     El código solo se obtiene con un PIN válido.
+   - instalacion/estado: marca de que el sistema ya se instaló.
+   El PIN nunca se guarda (solo su resumen SHA-256). Solo texto: sin fotos ni documentos.
    ===================================================================== */
 
 /* ---------- MOD-10.1 Conexión ---------- */
-let DB=null,AUTH=null,UNSUB=[];
+let DB=null,SID='',UNSUB=[],VIGIA=null;
+const AUTH=null;   // v5.0.0: no se usa Firebase Authentication
 const DEMO=typeof FIREBASE_CONFIG==='undefined'||!FIREBASE_CONFIG.apiKey||FIREBASE_CONFIG.apiKey==='REEMPLAZAR';
 const clean=o=>JSON.parse(JSON.stringify(o));
+const KSES='cp-sesion';
+const ss={get:()=>{try{return sessionStorage.getItem(KSES)}catch(e){return null}},set:v=>{try{sessionStorage.setItem(KSES,v)}catch(e){}},del:()=>{try{sessionStorage.removeItem(KSES)}catch(e){}}};
+const COL=c=>DB.collection('espacios').doc(SID).collection(c==='access'?'pines':c);   // colección dentro del espacio de datos
+const FICHA=k=>DB.collection('access').doc(k);                                      // ficha pública del PIN (solo por resumen)
 function conectarDatos(){
   if(DEMO){
     S.demo=true;S.ready=true;S.session={name:'Modo demostración',role:'admin',personId:'',email:'demo@local'};
     banner('<b>Modo demostración.</b> No hay conexión con Firebase: los cambios no se guardan al recargar. Configura <code>js/firebase-config.js</code> para trabajar en línea. Puedes importar un respaldo desde la pestaña Proyecto.');
     render();return;
   }
-  firebase.initializeApp(FIREBASE_CONFIG);
-  AUTH=firebase.auth();DB=firebase.firestore();
+  firebase.initializeApp(FIREBASE_CONFIG);DB=firebase.firestore();
   DB.enablePersistence({synchronizeTabs:true}).catch(()=>{});      // trabajo con señal débil en campo
-  AUTH.setPersistence(firebase.auth.Auth.Persistence.SESSION);        // el PIN se pide en cada ingreso al sistema
-  AUTH.onAuthStateChanged(onSesion);
+  reanudar();
 }
 
-/* ---------- MOD-10.2 Sesión (v4.0.0 · SC-2026-017: todo desde la página) ----------
-   No hay usuarios ni correos en Firebase. Cada pestaña abre una sesión anónima
-   y el PIN se valida contra la colección access (id = resumen SHA-256 del PIN;
-   el PIN nunca se guarda). La sesión queda en sesiones/{uid} y las reglas
-   (MOD-12.1) dan el rol según el PIN, de modo que un PIN retirado deja de
-   funcionar al instante. */
+/* ---------- MOD-10.2 Sesión ---------- */
 async function claveDePin(pin){const b=await crypto.subtle.digest('SHA-256',new TextEncoder().encode('cp-pin|'+pin));
   return [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('')}
-async function leerPerfil(db,uid){
-  const ses=await db.collection('sesiones').doc(uid).get();if(!ses.exists)return null;
-  const k=ses.data().pinKey,acc=await db.collection('access').doc(k).get();
-  return acc.exists?{key:k,...acc.data()}:null}
-async function onSesion(u){
-  if(!u){try{await AUTH.signInAnonymously()}catch(e){showGate(/operation-not-allowed|admin-restricted/.test(e?.code||'')?errMsg(e):'No se pudo conectar con el servidor: '+errMsg(e))}return}
-  try{
-    const a=await leerPerfil(DB,u.uid).catch(()=>null);
-    if(!a){pararLecturas();S.session=null;S.ready=true;renderBar();$('#view').innerHTML='';
-      let inst;try{inst=await DB.collection('instalacion').doc('estado').get()}
-      catch(e){showGate(e?.code==='permission-denied'?'Faltan las reglas de seguridad en Firebase (Firestore → Reglas → pegar y Publicar).':'No se pudo conectar con el servidor: '+errMsg(e));return}
-      if(!inst.exists)showInstalacion();else showGate();return}
-    if(!a.role||a.role==='none'){await cerrarSesion();showGate('Este PIN no tiene acceso al sistema. Consulta al administrador.');return}
-    S.session={email:u.uid,uid:u.uid,pinKey:a.key,personId:a.personId||'',role:a.role,name:a.name||'Usuario',greet:a.greet||'Bienvenido'};
-    iniciarLecturas();
-    if(S.justLogged){S.justLogged=false;welcome(S.session);audit('Ingreso',ROLES[a.role]||'')}
-    else hideGate();
-  }catch(e){showGate('No se pudo validar tu acceso: '+errMsg(e))}
+async function leerFicha(key){const d=await FICHA(key).get();if(!d.exists)return null;const a=d.data();return a&&a.sid&&a.role&&a.role!=='none'?{key,...a}:null}
+async function reanudar(){   // al recargar la pestaña se mantiene la sesión; en una pestaña nueva se pide el PIN
+  const k=ss.get();
+  try{if(k){const a=await leerFicha(k);if(a)return entrar(a)}ss.del();await pantallaInicial()}
+  catch(e){showGate(mensajeConexion(e))}
 }
-async function abrirSesionConPin(app,pin){   // devuelve el perfil del PIN o lanza «PIN incorrecto»
-  const au=app.auth();if(!au.currentUser)await au.signInAnonymously();
-  const uid=au.currentUser.uid,key=await claveDePin(pin);
-  try{await app.firestore().collection('sesiones').doc(uid).set({pinKey:key,at:nowISO()})}
-  catch(e){if(e?.code==='permission-denied')throw{code:'pin-incorrecto'};throw e}
-  const a=await leerPerfil(app.firestore(),uid);if(!a)throw{code:'pin-incorrecto'};return{uid,...a}}
-async function loginConPin(pin){await abrirSesionConPin(firebase.app(),pin);await onSesion(AUTH.currentUser)}
-async function cerrarSesion(){pararLecturas();const uid=S.session?.uid;S.session=null;
-  if(AUTH&&uid){try{await DB.collection('sesiones').doc(uid).delete()}catch(e){}}
-  if(AUTH){renderBar();$('#view').innerHTML='';showGate()}else showGate()}
-/* Instalación inicial: la primera vez, el propio index crea el PIN del administrador */
+function mensajeConexion(e){return e?.code==='permission-denied'?'Faltan las reglas de seguridad en Firebase (Firestore → Reglas → pegar y Publicar).':'No se pudo conectar con el servidor: '+errMsg(e)}
+async function pantallaInicial(){
+  pararLecturas();S.session=null;S.ready=true;renderBar();$('#view').innerHTML='';
+  const inst=await DB.collection('instalacion').doc('estado').get();
+  if(!inst.exists)showInstalacion();else showGate();
+}
+function entrar(a){
+  SID=a.sid;ss.set(a.key);
+  S.session={email:a.personId||'',personId:a.personId||'',pinKey:a.key,role:a.role,name:a.name||'Usuario',greet:a.greet||'Bienvenido'};
+  vigilarFicha(a.key);iniciarLecturas();
+  if(S.justLogged){S.justLogged=false;welcome(S.session);audit('Ingreso',ROLES[a.role]||'')}
+  else hideGate();
+}
+function vigilarFicha(key){   // si el administrador retira o cambia el PIN, la sesión se entera al instante
+  if(VIGIA)VIGIA();
+  VIGIA=FICHA(key).onSnapshot(d=>{if(!S.session||S.session.pinKey!==key)return;const a=d.exists?d.data():null;
+    if(!a||!a.role||a.role==='none'){cerrarSesion('Tu PIN fue retirado o cambiado. Consulta al administrador.');return}
+    if(a.role!==S.session.role||a.name!==S.session.name){S.session.role=a.role;S.session.name=a.name||S.session.name;render()}},()=>{});
+}
+async function loginConPin(pin){const a=await leerFicha(await claveDePin(pin));if(!a)throw{code:'pin-incorrecto'};entrar(a)}
+async function cerrarSesion(msg){pararLecturas();if(VIGIA){VIGIA();VIGIA=null}S.session=null;ss.del();
+  if(DB){renderBar();$('#view').innerHTML=''}showGate(typeof msg==='string'?msg:undefined)}
+/* Instalación inicial: la primera vez, el propio index crea el espacio de datos y el PIN del administrador */
 async function instalarSistema(nombre,pin,greet){
-  const uid=AUTH.currentUser.uid,key=await claveDePin(pin),b=DB.batch();
+  const key=await claveDePin(pin),sid=[...crypto.getRandomValues(new Uint8Array(20))].map(x=>x.toString(16).padStart(2,'0')).join('');
+  const ficha={role:'admin',personId:'p-lider',name:nombre,greet},b=DB.batch();
   b.set(DB.collection('instalacion').doc('estado'),{at:nowISO(),version:SISTEMA.version});
-  b.set(DB.collection('access').doc(key),{role:'admin',personId:'p-lider',name:nombre,greet});
-  b.set(DB.collection('sesiones').doc(uid),{pinKey:key,at:nowISO()});
+  b.set(FICHA(key),{...ficha,sid});
+  b.set(DB.collection('espacios').doc(sid).collection('pines').doc(key),ficha);
+  b.set(DB.collection('espacios').doc(sid).collection('people').doc('p-lider'),{name:nombre,role:'Jefe de proyecto',type:'Interno',company:'',phone:'',active:true,access:'admin',loginId:'pin',greet,updatedAt:nowISO(),updatedBy:'p-lider'});
   await b.commit();
-  await DB.collection('people').doc('p-lider').set({name:nombre,role:'Jefe de proyecto',type:'Interno',company:'',phone:'',active:true,access:'admin',loginId:'pin',greet,updatedAt:nowISO(),updatedBy:'p-lider'},{merge:true});
+  entrar({key,sid,...ficha});
 }
 
 /* ---------- MOD-10.3 Lectura en tiempo real ---------- */
 function iniciarLecturas(){
   pararLecturas();S.loaded={};S.ready=false;const need=['projects','people','tasks'];
   COLS.forEach(c=>{if(c==='audit'&&S.session.role!=='admin')return;
-    UNSUB.push(DB.collection(c).onSnapshot(s=>{S.data[c]=s.docs.map(d=>({id:d.id,...d.data()}));S.loaded[c]=true;if(!S.ready&&need.every(x=>S.loaded[x]))S.ready=true;schedule()},
+    UNSUB.push(COL(c).onSnapshot(s=>{S.data[c]=s.docs.map(d=>({id:d.id,...d.data()}));S.loaded[c]=true;if(!S.ready&&need.every(x=>S.loaded[x]))S.ready=true;schedule()},
       e=>{S.loaded[c]=true;if(need.every(x=>S.loaded[x]))S.ready=true;banner('No se pudo leer '+esc(c)+': '+esc(errMsg(e)));schedule()}))});
   setTimeout(()=>{if(!S.ready){S.ready=true;schedule()}},8000);
 }
 function pararLecturas(){UNSUB.forEach(f=>{try{f()}catch(e){}});UNSUB=[];COLS.forEach(c=>S.data[c]=[])}
 
-/* ---------- MOD-10.4 Escritura ---------- */
-function localUpsert(col,id,data,merge){const a=S.data[col];const i=a.findIndex(x=>x.id===id);if(i>=0)a[i]=merge?{...a[i],...data}:{id,...data};else a.push({id,...data});schedule()}
+/* ---------- MOD-10.4 Escritura ----------
+   El último parámetro (db) se conserva por compatibilidad con los módulos; ya no se usa. */
+function localUpsert(col,id,data,merge){const a=S.data[col]||(S.data[col]=[]);const i=a.findIndex(x=>x.id===id);if(i>=0)a[i]=merge?{...a[i],...data}:{id,...data};else a.push({id,...data});schedule()}
 const sello=d=>clean({...d,updatedAt:nowISO(),updatedBy:S.session?.personId||''});
 async function escribir(p){   // con señal débil la escritura queda en cola en el equipo y se envía al volver la conexión
   const r=await Promise.race([p.then(()=>'ok'),new Promise(res=>setTimeout(()=>res('cola'),6000))]);
   if(r==='cola'){toast('Sin señal: el registro quedó guardado en este equipo y se enviará al recuperar la conexión.');p.catch(e=>toast(errMsg(e)))}
 }
-async function save(col,id,data,db){data=sello(data);if(S.demo)return localUpsert(col,id,data,false);await escribir((db||DB).collection(col).doc(id).set(data))}
-async function patch(col,id,data,db){data=sello(data);if(S.demo)return localUpsert(col,id,data,true);await escribir((db||DB).collection(col).doc(id).update(data))}
-async function removeDoc(col,id,db){if(S.demo){S.data[col]=S.data[col].filter(x=>x.id!==id);schedule();return}await escribir((db||DB).collection(col).doc(id).delete())}
+async function save(col,id,data){data=sello(data);if(S.demo)return localUpsert(col,id,data,false);
+  if(col==='access')await escribir(FICHA(id).set({...data,sid:SID}));
+  await escribir(COL(col).doc(id).set(data))}
+async function patch(col,id,data){data=sello(data);if(S.demo)return localUpsert(col,id,data,true);
+  if(col==='access')await escribir(FICHA(id).set(data,{merge:true}));
+  await escribir(COL(col).doc(id).set(data,{merge:true}))}
+async function removeDoc(col,id){if(S.demo){S.data[col]=(S.data[col]||[]).filter(x=>x.id!==id);schedule();return}
+  if(col==='access')await escribir(FICHA(id).delete());
+  await escribir(COL(col).doc(id).delete())}
 async function audit(type,detail){try{await save('audit',uid('aud'),{projectId:S.pid||'',type,detail:detail||'',personId:S.session?.personId||'',byEmail:S.session?.email||'',at:nowISO()})}catch(e){}}
 
-/* ---------- MOD-10.5 Autorización con PIN del administrador en el equipo de otra persona ---------- */
-function appSecundaria(nombre){return firebase.apps.find(a=>a.name===nombre)||firebase.initializeApp(FIREBASE_CONFIG,nombre)}
+/* ---------- MOD-10.5 Autorización con PIN del administrador ---------- */
 async function sesionAdministrador(pin){
-  const app=appSecundaria('autoriza');await app.auth().setPersistence(firebase.auth.Auth.Persistence.NONE);
-  const fin=async()=>{try{const u=app.auth().currentUser;if(u)await app.firestore().collection('sesiones').doc(u.uid).delete()}catch(e){}await app.auth().signOut().catch(()=>{})};
-  let a;try{a=await abrirSesionConPin(app,pin)}catch(e){await fin();throw e.code==='pin-incorrecto'?{code:'no-admin'}:e}
-  if(a.role!=='admin'){await fin();throw{code:'no-admin'}}
-  return{db:app.firestore(),fin,name:a.name||'Administrador'};
+  const a=await leerFicha(await claveDePin(pin));
+  if(!a||a.role!=='admin'||a.sid!==SID)throw{code:'no-admin'};
+  return{db:null,fin:()=>{},name:a.name||'Administrador'};
 }
 
-/* ---------- MOD-10.6 Ingresos y cambio de PIN (v4.0.0 · SC-2026-017) ----------
-   Asignar un PIN crea su ficha en access desde la página; el PIN anterior de
-   esa persona se elimina y deja de funcionar. Solo el administrador. */
-async function accesosDe(personId){const s=await DB.collection('access').get();return s.docs.filter(d=>d.data().personId===personId).map(d=>d.id)}
+/* ---------- MOD-10.6 Ingresos y cambio de PIN ----------
+   Asignar un PIN crea su ficha desde la página; el PIN anterior de esa persona
+   se elimina y deja de funcionar al instante. Solo el administrador. */
+async function leerColeccionPines(){const s=await COL('access').get();return s.docs.map(d=>({id:d.id,...d.data()}))}
+async function accesosDe(personId){return (await leerColeccionPines()).filter(d=>d.personId===personId).map(d=>d.id)}
 async function asignarPin(persona,pin,role,greet){
   const key=await claveDePin(pin);
-  if(!S.demo){const ya=await DB.collection('access').doc(key).get();if(ya.exists&&ya.data().personId!==persona.id)throw{code:'pin-usado'}}
+  if(!S.demo){const ya=await FICHA(key).get();if(ya.exists&&!(ya.data().sid===SID&&ya.data().personId===persona.id))throw{code:'pin-usado'}}
   await save('access',key,{role,personId:persona.id,name:persona.name,greet});
-  if(!S.demo&&persona.id===S.session?.personId){await DB.collection('sesiones').doc(S.session.uid).set({pinKey:key,at:nowISO()});S.session.pinKey=key}
+  if(!S.demo&&persona.id===S.session?.personId){S.session.pinKey=key;ss.set(key);vigilarFicha(key)}
   if(!S.demo)for(const k of await accesosDe(persona.id))if(k!==key)await removeDoc('access',k);
   await patch('people',persona.id,{loginId:'pin',access:role,greet});
 }
@@ -757,7 +765,7 @@ function errMsg(e){const c=e?.code||'';
   return({'permission-denied':'No tienes permiso para este cambio. Debe autorizarlo el administrador.','unavailable':'Sin conexión con el servidor. Revisa la señal e intenta de nuevo.',
     'auth/invalid-credential':'PIN incorrecto.','auth/wrong-password':'PIN incorrecto.','auth/invalid-login-credentials':'PIN incorrecto.','auth/user-not-found':'Usuario no registrado.',
     'auth/too-many-requests':'Demasiados intentos. Espera unos minutos antes de volver a intentar.','auth/network-request-failed':'Sin conexión a internet.',
-    'auth/email-already-in-use':'Ese PIN no está disponible. Usa o genera otro.','auth/weak-password':'El PIN debe tener 6 dígitos.','no-admin':'Ese PIN no corresponde al administrador.','pin-incorrecto':'PIN incorrecto.','pin-usado':'Ese PIN ya lo usa otra persona. Elige otro.','auth/operation-not-allowed':'Falta activar el acceso «Anónimo» en Firebase (Authentication → Método de acceso).','auth/admin-restricted-operation':'Falta activar el acceso «Anónimo» en Firebase (Authentication → Método de acceso).',
+    'auth/email-already-in-use':'Ese PIN no está disponible. Usa o genera otro.','auth/weak-password':'El PIN debe tener 6 dígitos.','no-admin':'Ese PIN no corresponde al administrador.','pin-incorrecto':'PIN incorrecto.','pin-usado':'Ese PIN ya lo usa otra persona. Elige otro.','auth/api-key-not-valid.-please-pass-a-valid-api-key.':'La clave de conexión (apiKey) del index no es válida para este proyecto de Firebase.',
     'resource-exhausted':'Se alcanzó el límite del plan de Firebase. Intenta más tarde.'})[c]||(e?.message||String(e));
 }
 
@@ -824,8 +832,8 @@ function showInstalacion(){
     if(typeof pinTrivial==='function'&&pinTrivial(pin))return err('Ese PIN es muy fácil de adivinar (repetido o consecutivo). Usa otro.');
     if(pin!==$('#in_pin2').value.trim())return err('Los dos PIN no coinciden.');
     $('#in_ok').disabled=true;err('');
-    try{await instalarSistema(nom,pin,greet);S.justLogged=true;await onSesion(AUTH.currentUser)}
-    catch(e){$('#in_ok').disabled=false;err(e?.code==='permission-denied'?'El sistema ya fue instalado. Recarga la página e ingresa con tu PIN.':errMsg(e))}};
+    try{S.justLogged=true;await instalarSistema(nom,pin,greet)}
+    catch(e){S.justLogged=false;$('#in_ok').disabled=false;err(e?.code==='permission-denied'?'El sistema ya fue instalado o faltan las reglas en Firebase. Recarga la página.':errMsg(e))}};
   setTimeout(()=>$('#in_nom').focus(),30);
 }
 
@@ -1822,7 +1830,7 @@ function respaldoHTML(){const c=cfgSistema();
    <p class="err" id="rb_err" hidden></p><p class="hint" id="rb_msg"></p>
    <p class="hint">Guarda los respaldos fuera del celular (carpeta de red de la empresa o disco autorizado). Además, el administrador puede ejecutar <code>npm run respaldar</code> desde la computadora.</p>`}
 async function leerColeccionCompleta(c){
-  if(c==='access'){if(S.demo)return [];const s=await DB.collection('access').get();return s.docs.map(d=>({id:d.id,...d.data()}))}
+  if(c==='access'){if(S.demo)return [];return await leerColeccionPines()}
   return (S.data[c]||[]).map(x=>({...x}))}
 function montarRespaldo(m){
   const err=t=>{const e=$('#rb_err');e.textContent=t;e.hidden=!t},msg=t=>$('#rb_msg').textContent=t;
